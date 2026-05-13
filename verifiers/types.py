@@ -47,6 +47,23 @@ ClientType = Literal[
 ]
 MessageType = Literal["chat", "completion"]  # deprecated
 
+# Wire-shape selector shared between RendererClient and
+# OpenAIChatCompletionsTokenClient. Picks which inference-server surface the
+# client targets at request-build time. Same flag drives both clients so a
+# single `ClientConfig.renderer_transport` setting routes consistently.
+#
+# - "prime_vllm_generate" (default): vLLM's TITO surface. For RendererClient
+#   that's POST /v1/chat/completions with a renderer-flavored request body.
+#   For OpenAIChatCompletionsTokenClient that's POST
+#   /v1/chat/completions/tokens with `tokens=prompt_ids` and bridge
+#   tokenization via the server's /tokenize route.
+# - "dynamo_chat_nvext": Dynamo's standard chat-completions route with
+#   pre-tokenized prompt carried in `nvext.token_data`. Server-side token
+#   IDs come back via `nvext.engine_data.completion_token_ids` (PR #8119
+#   canonical channel). Bridge tokenization runs locally via the
+#   transformers fast tokenizer; no /tokenize HTTP round-trip.
+RendererTransport = Literal["prime_vllm_generate", "dynamo_chat_nvext"]
+
 
 # Provider-agnostic message + response types
 class CustomBaseModel(BaseModel):
@@ -590,6 +607,7 @@ class ClientConfig(BaseModel):
     client_idx: int = 0
     client_type: ClientType = "openai_chat_completions"
     renderer: str = "auto"
+    renderer_transport: RendererTransport = "prime_vllm_generate"
     renderer_model_name: str | None = None
     renderer_pool_size: int | None = None
     tool_parser: str | None = None
