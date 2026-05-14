@@ -578,6 +578,16 @@ class RendererClient(
             prompt_ids = None
             multi_modal_data = None
 
+        # rl-sdk-2: thread renderer_transport from ClientConfig into the
+        # renderer's generate() so the renderer client works against
+        # Dynamo's /v1/chat/completions surface as well as vLLM's
+        # /inference/v1/generate. setup_clients auto-picks
+        # "dynamo_chat_nvext" when client_config.backend == "dynamo".
+        transport = (
+            self._config.renderer_transport
+            if self._config is not None
+            else "prime_vllm_generate"
+        )
         return await generate(
             client=self.client,
             renderer=renderer,
@@ -587,6 +597,7 @@ class RendererClient(
             multi_modal_data=multi_modal_data,
             tools=tools,
             sampling_params=sampling_params,
+            transport=transport,
             cache_salt=args.get("cache_salt")
             or sampling_params.pop("cache_salt", None),
             priority=args.get("priority") or sampling_params.pop("priority", None),
