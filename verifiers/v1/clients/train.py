@@ -12,10 +12,10 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+import httpx
 from openai import AsyncOpenAI, OpenAIError
-from renderers import RenderedTokens
 from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RendererConfig
+from renderers import RenderedTokens, RendererConfig
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
@@ -103,6 +103,8 @@ def response_from_generate(
         if result.get("finish_reason") in FINISH_REASONS
         else None
     )
+
+
     tool_calls = [
         ToolCall(
             id=tc.id or f"call_{i}",
@@ -154,6 +156,78 @@ def response_from_generate(
     )
 
 
+async def generate_dynamo_chat(
+    *,
+    client: AsyncOpenAI,
+    renderer,
+    messages: list[dict],
+    model: str,
+    tools: list[dict] | None,
+    sampling_params: dict[str, Any],
+    extra_headers: dict[str, str] | None,
+) -> dict[str, Any]:
+    """Render locally and request Dynamo's token-id response extension.
+
+    Dynamo's current OpenAI endpoint does not accept the legacy
+    ``return_token_ids`` request field. It exposes generated IDs through
+    ``nvext.completion_token_ids`` when explicitly requested instead.
+    """
+    from renderers.client import _maybe_offload
+
+    rendered = await _maybe_offload(
+        renderer, lambda: renderer.render(messages, tools=tools, add_generation_prompt=True)
+    )
+    params = dict(sampling_params)
+    extra_body = params.pop("extra_body", {})
+    if not isinstance(extra_body, dict):
+        extra_body = {}
+    params.pop("return_token_ids", None)
+    extra_body.pop("return_token_ids", None)
+    nvext = dict(extra_body.pop("nvext", {}))
+    extra_fields = list(nvext.get("extra_fields") or [])
+    if "completion_token_ids" not in extra_fields:
+        extra_fields.append("completion_token_ids")
+    nvext["extra_fields"] = extra_fields
+
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        **params,
+        **extra_body,
+        "nvext": nvext,
+        "logprobs": True,
+        "top_logprobs": 1,
+    }
+    if tools:
+        body["tools"] = tools
+    post_kwargs: dict[str, Any] = {"cast_to": httpx.Response, "body": body}
+    if extra_headers:
+        post_kwargs["options"] = {"headers": extra_headers}
+    raw_response = await client.post("/chat/completions", **post_kwargs)
+    raw_response.raise_for_status()
+    data = raw_response.json()
+    choice = (data.get("choices") or [{}])[0]
+    completion_ids = (data.get("nvext") or {}).get("completion_token_ids") or []
+    if not completion_ids:
+        raise ValueError("Dynamo response omitted nvext.completion_token_ids")
+    parsed = await _maybe_offload(renderer, lambda: renderer.parse_response(completion_ids, tools=tools))
+    raw_logprobs = choice.get("logprobs") or {}
+    content_logprobs = raw_logprobs.get("content") if isinstance(raw_logprobs, dict) else None
+    return {
+        "request_id": data.get("id") or "",
+        "prompt_ids": list(rendered.token_ids),
+        "completion_ids": list(completion_ids),
+        "completion_logprobs": [float(item.get("logprob") or 0.0) for item in content_logprobs or []],
+        "content": parsed.content,
+        "reasoning_content": parsed.reasoning_content,
+        "tool_calls": parsed.tool_calls,
+        "finish_reason": choice.get("finish_reason"),
+        "routed_experts": None,
+        "multi_modal_data": rendered.multi_modal_data,
+        "prompt_attribution": rendered,
+    }
+
+
 def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     """Renderer bridges may extend sampled assistant turns with tool calls and/or a new user."""
     if not messages:
@@ -186,11 +260,13 @@ class TrainClient(Client):
         pool_size: int = 1,
         config: RendererConfig | None = None,
         renderer_model_name: str | None = None,
+        renderer_transport: str = "vllm_generate",
     ) -> None:
         self.openai = openai
         self.pool_size = pool_size
         self.config = config
         self.renderer_model_name = renderer_model_name
+        self.renderer_transport = renderer_transport
         self._pool = None
 
     def _renderer_pool(self, model: str):
@@ -247,6 +323,8 @@ class TrainClient(Client):
         # Only build the (O(context)) previous-turn token ids once the cheap guards pass — a
         # multimodal prompt or a tail that isn't a clean `[tool*, user?]` extension can't bridge.
         can_bridge = (
+            self.renderer_transport == "vllm_generate"
+            and
             turn is not None
             and not _has_multimodal_content(prompt)
             and _is_valid_incremental_tail(wire_messages)
@@ -279,18 +357,29 @@ class TrainClient(Client):
             wire_messages = [message_to_wire(m) for m in prompt]
 
         try:
-            result = await generate(
-                client=self.openai,
-                renderer=renderer,
-                messages=wire_messages,
-                model=model,
-                prompt_ids=prompt_ids,
-                multi_modal_data=multi_modal_data,
-                prompt_attribution=prompt_attribution,
-                tools=wire_tools,
-                sampling_params=sampling_params,
-                extra_headers={SESSION_ID_HEADER: session_id} if session_id else None,
-            )
+            if self.renderer_transport == "dynamo_chat":
+                result = await generate_dynamo_chat(
+                    client=self.openai,
+                    renderer=renderer,
+                    messages=wire_messages,
+                    model=model,
+                    tools=wire_tools,
+                    sampling_params=sampling_params,
+                    extra_headers={SESSION_ID_HEADER: session_id} if session_id else None,
+                )
+            else:
+                result = await generate(
+                    client=self.openai,
+                    renderer=renderer,
+                    messages=wire_messages,
+                    model=model,
+                    prompt_ids=prompt_ids,
+                    multi_modal_data=multi_modal_data,
+                    prompt_attribution=prompt_attribution,
+                    tools=wire_tools,
+                    sampling_params=sampling_params,
+                    extra_headers={SESSION_ID_HEADER: session_id} if session_id else None,
+                )
         except RendererOverlongPromptError as e:
             raise OverlongPromptError(str(e)) from e
         except OpenAIError as e:
