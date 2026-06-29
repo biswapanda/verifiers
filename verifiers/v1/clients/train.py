@@ -166,10 +166,11 @@ async def generate_dynamo_chat(
     sampling_params: dict[str, Any],
     extra_headers: dict[str, str] | None,
 ) -> dict[str, Any]:
-    """Render locally and request Dynamo's token-id response extension.
+    """Render locally and use Dynamo's tokens-in/tokens-out chat transport.
 
     Dynamo's current OpenAI endpoint does not accept the legacy
-    ``return_token_ids`` request field. It exposes generated IDs through
+    ``return_token_ids`` request field. It accepts the locally rendered prompt
+    through ``nvext.token_data`` and exposes generated IDs through
     ``nvext.completion_token_ids`` when explicitly requested instead.
     """
     from renderers.client import _maybe_offload
@@ -188,6 +189,9 @@ async def generate_dynamo_chat(
     if "completion_token_ids" not in extra_fields:
         extra_fields.append("completion_token_ids")
     nvext["extra_fields"] = extra_fields
+    # token_data is authoritative: Dynamo bypasses server-side chat rendering
+    # and forwards this immutable token sequence to its KV-aware router.
+    nvext["token_data"] = list(rendered.token_ids)
 
     body: dict[str, Any] = {
         "model": model,
