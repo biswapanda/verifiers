@@ -81,9 +81,14 @@ class TrainClientConfig(BaseClientConfig):
     adapter name (served only for sampling) never drives tokenizer loading. Falls back to
     the per-request model when None."""
 
-    renderer_transport: Literal["vllm_generate", "dynamo_chat"] = "vllm_generate"
-    """Token transport used by the renderer client. ``dynamo_chat`` sends an OpenAI chat
-    completion with Dynamo's ``nvext.completion_token_ids`` response extension."""
+    renderer_transport: Literal[
+        "vllm_generate", "dynamo_chat", "dynamo_vllm_generate"
+    ] = "vllm_generate"
+    """Token transport used by the renderer client.
+
+    ``dynamo_chat`` sends Dynamo's OpenAI chat envelope, while
+    ``dynamo_vllm_generate`` uses Dynamo's opt-in vLLM-compatible engine API.
+    """
 
 
 # Discriminated union for a CLI-selectable client (`--client.type eval|train`).

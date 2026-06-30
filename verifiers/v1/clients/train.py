@@ -327,7 +327,7 @@ class TrainClient(Client):
         # Only build the (O(context)) previous-turn token ids once the cheap guards pass — a
         # multimodal prompt or a tail that isn't a clean `[tool*, user?]` extension can't bridge.
         can_bridge = (
-            self.renderer_transport == "vllm_generate"
+            self.renderer_transport in {"vllm_generate", "dynamo_vllm_generate"}
             and
             turn is not None
             and not _has_multimodal_content(prompt)
@@ -372,6 +372,9 @@ class TrainClient(Client):
                     extra_headers={SESSION_ID_HEADER: session_id} if session_id else None,
                 )
             else:
+                generate_kwargs: dict[str, Any] = {}
+                if self.renderer_transport == "dynamo_vllm_generate":
+                    generate_kwargs["transport"] = self.renderer_transport
                 result = await generate(
                     client=self.openai,
                     renderer=renderer,
@@ -383,6 +386,7 @@ class TrainClient(Client):
                     tools=wire_tools,
                     sampling_params=sampling_params,
                     extra_headers={SESSION_ID_HEADER: session_id} if session_id else None,
+                    **generate_kwargs,
                 )
         except RendererOverlongPromptError as e:
             raise OverlongPromptError(str(e)) from e
