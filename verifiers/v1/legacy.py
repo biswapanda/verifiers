@@ -346,6 +346,11 @@ class LegacyEnvServer(EnvServer):
                     renderer_config=client_config.renderer,
                     renderer_model_name=renderer_model,
                     renderer_pool_size=client_config.pool_size,
+                    renderer_transport=(
+                        "dynamo_vllm_generate"
+                        if client_config.renderer_transport == "dynamo_vllm_generate"
+                        else "vllm_generate"
+                    ),
                     api_base_url=client_config.base_url,
                     api_key_var=client_config.api_key_var,
                     extra_headers=dict(client_config.headers or {}),

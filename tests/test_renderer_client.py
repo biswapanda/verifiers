@@ -414,6 +414,35 @@ async def test_get_native_response_forwards_extra_headers_to_generate():
     }
 
 
+@pytest.mark.asyncio
+async def test_get_native_response_uses_dynamo_vllm_generate_transport():
+    captured: dict = {}
+    client = object.__new__(RendererClient)
+    client._renderer = object()
+    client._pool_size = 1
+    client._config = vf.ClientConfig(
+        client_type="renderer", renderer_transport="dynamo_vllm_generate"
+    )
+    client._client = object()  # type: ignore[attr-defined]
+
+    async def _fake_generate(**kwargs):
+        captured.update(kwargs)
+        return {"content": "ok"}
+
+    with (
+        patch.object(RendererClient, "_get_renderer_or_pool", return_value=object()),
+        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
+    ):
+        await client.get_native_response(
+            prompt=[{"role": "user", "content": "hi"}],
+            model="test-model",
+            sampling_args={},
+            tools=None,
+        )
+
+    assert captured["transport"] == "dynamo_vllm_generate"
+
+
 class _BridgeRenderer:
     supports_tools = True
 

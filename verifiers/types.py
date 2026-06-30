@@ -930,6 +930,14 @@ class ClientConfig(BaseModel):
     renderer_pool_size: int | None = None
     """Size of the shared renderer pool. ``None`` falls back to the
     ``RendererClient`` default."""
+    renderer_transport: Literal["vllm_generate", "dynamo_vllm_generate"] = (
+        "vllm_generate"
+    )
+    """Token endpoint used by renderer clients.
+
+    ``dynamo_vllm_generate`` selects Dynamo's opt-in vLLM-compatible engine
+    API. The default preserves the legacy vLLM-sidecar endpoint.
+    """
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list["EndpointClientConfig"] = Field(default_factory=list)

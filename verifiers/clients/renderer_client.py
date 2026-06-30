@@ -613,6 +613,9 @@ class RendererClient(
         # 4xx → vf.OverlongPromptError) for engines whose ``/v1/models``
         # doesn't expose ``max_model_len``.
         try:
+            generate_kwargs: dict[str, Any] = {}
+            if self._config is not None and self._config.renderer_transport == "dynamo_vllm_generate":
+                generate_kwargs["transport"] = "dynamo_vllm_generate"
             return await generate(
                 client=self.client,
                 renderer=renderer,
@@ -627,6 +630,7 @@ class RendererClient(
                 or sampling_params.pop("cache_salt", None),
                 priority=args.get("priority") or sampling_params.pop("priority", None),
                 extra_headers=extra_headers or None,
+                **generate_kwargs,
             )
         except RendererOverlongPromptError as exc:
             raise OverlongPromptError(str(exc)) from exc
